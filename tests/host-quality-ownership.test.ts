@@ -14,7 +14,7 @@ import { NativeCompatibilityError, NativeRequestError, type NativeClient } from 
 import { NativeClientConnection } from "../src/client/native/client-connection";
 import { androidAppIntent } from "../src/client/native/activation";
 import { defaultNativeCapturePath, nativeCaptureTargetKey } from "../src/client/native/capture-selection";
-import { manualVideoCodecPreference, sfuVideoCodec } from "../src/client/webrtc/video-codec";
+import { manualVideoCodecPreference, nativeSenderCodec, sfuVideoCodec } from "../src/client/webrtc/video-codec";
 import { nativeAppDetected, type NativeSourceList } from "../src/client/components/living/CaptureSourcePicker";
 import { NativeMediaBridgeError } from "../src/client/native/media-bridge";
 import { InputRoute } from "../src/client/remote-control/input-route";
@@ -98,7 +98,7 @@ function fixture(launchedByClient = true, nativeConnected = true) {
     NativeClient: { connect: vi.fn(async (_options?: { signal: AbortSignal }): Promise<typeof client | null> => null) },
     setJoiningRoom: vi.fn(), startSharing: vi.fn(), openCaptureSourcePicker: vi.fn(),
     videoCodecRef: ref({ primary: "h264" }),
-    videoCodecModeRef: ref("h264"), sfuVideoCodecsRef: ref(["h264", "vp8"]), sfuVideoCodec,
+    videoCodecModeRef: ref("h264"), sfuVideoCodecsRef: ref(["h264", "vp8"]), sfuVideoCodec, nativeSenderCodec,
     MAX_ENDPOINT_MEDIA_CHILDREN: 2, MAX_VIEWERS_PER_ROOM_LIMIT,
     nativeRelayCapacity, relayPhysicalCapacity,
     ordinaryRelayCapacityRef: ref(2), requestedRelayCapacityRef: ref<number | null>(null), hostRelayAvailableRef: ref(false),
