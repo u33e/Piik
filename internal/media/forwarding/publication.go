@@ -54,7 +54,7 @@ func NewPublication(options TransportOptions) (_ *Publication, err error) {
 	if options.Source == nil || options.ConnectionID == "" || options.InitialBitrate <= 0 {
 		return nil, errors.New("publication options are invalid")
 	}
-	publication := &Publication{source: options.Source, activeCount: len(options.Source.TrackInfo().Layers)}
+	publication := &Publication{source: options.Source, activeCount: options.Source.Streams()}
 	publication.counters = make([]publicationCounters, publication.activeCount)
 	defer func() {
 		if err != nil {
@@ -127,7 +127,7 @@ func NewPublication(options TransportOptions) (_ *Publication, err error) {
 	// Pion's diagnostic PC.ID is clock-based and can repeat. Source membership
 	// needs a unique physical owner even when signaling reuses a connection ID.
 	subscriberID := rand.Text()
-	for index := range options.Source.TrackInfo().Layers {
+	for index := 0; index < publication.activeCount; index++ {
 		receiver := &publicationLayer{Source: options.Source, layer: int32(index), publication: publication}
 		track, trackErr := sfu.NewDownTrack(sfu.DownTrackParams{
 			Codecs: []webrtc.RTPCodecParameters{codec}, Source: livekit.TrackSource_SCREEN_SHARE,
@@ -142,7 +142,13 @@ func NewPublication(options TransportOptions) (_ *Publication, err error) {
 			return nil, trackErr
 		}
 		publication.tracks = append(publication.tracks, track)
-		track.SetMaxSpatialLayer(int32(index))
+		// One spatial layer per stream caps at its own index; a single scalable
+		// stream must keep every declared spatial layer reachable downstream.
+		maxSpatialLayer := int32(index)
+		if options.Source.representation.Spatial {
+			maxSpatialLayer = int32(len(options.Source.TrackInfo().Layers) - 1)
+		}
+		track.SetMaxSpatialLayer(maxSpatialLayer)
 		local := &publicationTrack{DownTrack: track, id: options.Source.TrackID(), rid: PublicationRID(index, publication.activeCount), pacer: publication.pacer, counters: &publication.counters[index]}
 		if transceiver == nil {
 			transceiver, err = publication.PC.AddTransceiverFromTrack(local, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})

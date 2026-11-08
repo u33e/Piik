@@ -65,3 +65,23 @@ Evidence applies to its tested revision, device and workload. Builds and local
 controls establish their named behavior; they do not promise every remote network
 or device or a population NAT success rate. Browser/OS suspension is not a
 keepalive guarantee.
+
+## VP9 And AV1 Share, SVC Forwarding
+
+Verified 2026-11-08 with the embedded SFU gate (real Chrome, real capture,
+in-process SFU) and the affected Go/TypeScript suites on Windows x64.
+
+| Arm | Command | Result |
+| --- | --- | --- |
+| Browser VP8, P2P-first | `PIIK_EMBEDDED_SFU_CODEC=vp8` | pass, `publication-retirement` |
+| Browser VP8, SFU only | `…_CODEC=vp8 …_ONLY=true` | pass |
+| Browser H264, SFU only | `…_CODEC=h264 …_ONLY=true` | pass |
+| Browser VP9 (SVC), P2P-first | `…_CODEC=vp9` | pass, both ends `video/VP9`, `scalabilityMode: L3T3` |
+| Browser VP9 (SVC), SFU only | `…_CODEC=vp9 …_ONLY=true` | pass |
+| Browser AV1 (SVC) | `…_CODEC=av1` | fails at first frame on this machine: software AV1 cannot sustain 720p |
+
+The gate asserts the negotiated codec on both publisher and subscriber, so a
+silent fallback to H264/VP8 fails the arm. Layer drop under a 100 kbps ceiling,
+publication retirement, subscription recovery and page-reload recovery are
+covered. AV1 delivery still needs a hardware-encode machine; the Auto probe
+rejects AV1 on software encoders, which is the supported outcome, not a defect.

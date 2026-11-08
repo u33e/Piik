@@ -693,9 +693,11 @@ export const en: Record<CopyKey, string> = {
     "This service supports peer-to-peer (P2P) media only, so Privacy mode is always on",
   "host.advanced.codec": "Video codec",
   "host.advanced.codec.auto": "Auto",
-  "host.advanced.codec.autoHint": "Pick automatically",
+  "host.advanced.codec.autoHint": "Measured best",
   "host.advanced.codec.vp8Hint": "Compatibility first",
   "host.advanced.codec.h264Hint": "Hardware first",
+  "host.advanced.codec.vp9Hint": "Quality first",
+  "host.advanced.codec.av1Hint": "Smallest bitrate",
 
   "host.details": "Connection details",
   "host.details.show": "Show connection details",
@@ -859,7 +861,7 @@ export const en: Record<CopyKey, string> = {
   "host.notice.sfuRecovering": "Server forwarding source switch failed; restoring viewer connections",
   "host.password.inputPlaceholder": "Enter password",
 
-  "stats.warn.codec": "Video codec is {codec}; expected H264 or VP8",
+  "stats.warn.codec": "Video codec is {codec}; expected H264, VP8, VP9 or AV1",
   "stats.warn.audioCodec": "Audio codec is {codec}; expected Opus",
 
   "viewer.msg.joinUnavailable": "Cannot join the room right now",

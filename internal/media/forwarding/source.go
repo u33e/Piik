@@ -26,6 +26,24 @@ type LayerFormat struct {
 	Width, Height, Bitrate uint32
 }
 
+// Representation describes how one published track carries its layers. RID
+// simulcast gives every spatial layer its own stream; a single-stream SVC
+// publication carries all spatial layers in one.
+type Representation struct {
+	// RIDs has one entry per declared layer for RID simulcast, lowest first.
+	// A spatial publication leaves it empty and carries every layer in one stream.
+	RIDs    []string
+	Spatial bool
+}
+
+// Streams is the number of encoded streams the publisher sends.
+func (representation Representation) Streams(layers int) int {
+	if representation.Spatial {
+		return 1
+	}
+	return layers
+}
+
 // Internal encoders and RTP copies already know the local time of their source
 // RTP/NTP correlation. Received reports still need the remote clock estimate.
 type sourceBuffer struct {
@@ -45,6 +63,7 @@ type SourceOptions struct {
 	ID, StreamID     string
 	Codec            webrtc.RTPCodecParameters
 	Formats          []LayerFormat
+	Representation   Representation
 	HeaderExtensions []webrtc.RTPHeaderExtensionParameter
 	MaxPackets       int
 	OnRTCP           func(layer int, packets []rtcp.Packet)
@@ -58,6 +77,7 @@ type Source struct {
 	mu                   sync.Mutex
 	buffers              []*sourceBuffer
 	maxPackets           int
+	representation       Representation
 	onRTCP               func(int, []rtcp.Packet)
 	closed               bool
 	currentTrackInfo     atomic.Pointer[livekit.TrackInfo]
@@ -76,7 +96,9 @@ func (source *Source) RateControlled(layer int32) bool {
 func NewSource(options SourceOptions) (*Source, error) {
 	audio := strings.EqualFold(options.Codec.MimeType, webrtc.MimeTypeOpus) && options.Codec.ClockRate == 48_000
 	video := options.Codec.ClockRate == 90_000 && (strings.EqualFold(options.Codec.MimeType, webrtc.MimeTypeH264) ||
-		strings.EqualFold(options.Codec.MimeType, webrtc.MimeTypeVP8))
+		strings.EqualFold(options.Codec.MimeType, webrtc.MimeTypeVP8) ||
+		strings.EqualFold(options.Codec.MimeType, webrtc.MimeTypeVP9) ||
+		strings.EqualFold(options.Codec.MimeType, webrtc.MimeTypeAV1))
 	if options.ID == "" || options.StreamID == "" || (!audio && !video) {
 		return nil, errors.New("forwarded source is invalid")
 	}
@@ -102,9 +124,10 @@ func NewSource(options SourceOptions) (*Source, error) {
 		info.Type, info.Source = livekit.TrackType_AUDIO, livekit.TrackSource_MICROPHONE
 		kind, layers = webrtc.RTPCodecTypeAudio, 1
 	} else {
-		if err := setLayerFormats(info, options.Formats); err != nil {
+		if err := setLayerFormats(info, options.Formats, options.Representation); err != nil {
 			return nil, err
 		}
+		layers = options.Representation.Streams(len(options.Formats))
 	}
 	source := &Source{
 		ReceiverBase: sfu.NewReceiverBase(sfu.ReceiverBaseParams{
@@ -113,11 +136,20 @@ func NewSource(options SourceOptions) (*Source, error) {
 			HeaderExtensions: canonicalHeaderExtensions(options.HeaderExtensions), Logger: diagnostics.MediaLogger("source").WithValues("trackId", diagnostics.ID(options.ID)),
 			StreamTrackerManagerConfig: sfu.DefaultStreamTrackerManagerConfig,
 		}, info, sfu.ReceiverCodecStateNormal),
-		buffers:    make([]*sourceBuffer, layers),
-		maxPackets: options.MaxPackets, onRTCP: options.OnRTCP,
+		buffers:        make([]*sourceBuffer, layers),
+		representation: options.Representation,
+		maxPackets:     options.MaxPackets, onRTCP: options.OnRTCP,
 	}
 	source.currentTrackInfo.Store(info)
 	return source, nil
+}
+
+// Streams is the number of encoded streams this source receives: one per RID
+// for simulcast, one for a single-stream SVC publication.
+func (source *Source) Streams() int {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	return len(source.buffers)
 }
 
 func (source *Source) TrackInfo() *livekit.TrackInfo {
@@ -166,9 +198,12 @@ func canonicalHeaderExtensions(extensions []webrtc.RTPHeaderExtensionParameter) 
 	return result
 }
 
-func setLayerFormats(info *livekit.TrackInfo, formats []LayerFormat) error {
+func setLayerFormats(info *livekit.TrackInfo, formats []LayerFormat, representation Representation) error {
 	if len(formats) < 1 || len(formats) > int(buffer.DefaultMaxLayerSpatial)+1 {
 		return errors.New("forwarded video layer count is invalid")
+	}
+	if len(representation.RIDs) != 0 && len(representation.RIDs) != len(formats) {
+		return errors.New("forwarded video rids do not match its layers")
 	}
 	layers := make([]*livekit.VideoLayer, len(formats))
 	for index, format := range formats {
@@ -179,16 +214,27 @@ func setLayerFormats(info *livekit.TrackInfo, formats []LayerFormat) error {
 		if index == len(formats)-1 {
 			quality = livekit.VideoQuality_HIGH
 		}
+		// An unnamed simulcast source keeps the library's stable RID order.
+		rid := buffer.DefaultVideoLayersRid[index]
+		if representation.Spatial {
+			rid = ""
+		} else if len(representation.RIDs) != 0 {
+			rid = representation.RIDs[index]
+		}
 		layers[index] = &livekit.VideoLayer{
-			Quality: quality, SpatialLayer: int32(index), Rid: buffer.DefaultVideoLayersRid[index],
+			Quality: quality, SpatialLayer: int32(index), Rid: rid,
 			Width: format.Width, Height: format.Height, Bitrate: format.Bitrate,
 		}
 	}
 	highest := formats[len(formats)-1]
 	info.Width, info.Height = highest.Width, highest.Height
-	info.Simulcast, info.Layers = len(layers) > 1, layers
+	info.Simulcast, info.Layers = !representation.Spatial && len(layers) > 1, layers
+	mode := livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM
+	if representation.Spatial {
+		mode = livekit.VideoLayer_MULTIPLE_SPATIAL_LAYERS_PER_STREAM
+	}
 	info.Codecs = []*livekit.SimulcastCodecInfo{{
-		MimeType: info.MimeType, VideoLayerMode: livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM, Layers: layers,
+		MimeType: info.MimeType, VideoLayerMode: mode, Layers: layers,
 	}}
 	return nil
 }
@@ -198,16 +244,16 @@ func setLayerFormats(info *livekit.TrackInfo, formats []LayerFormat) error {
 // The caller serializes updates with its capture/source generation changes.
 func (source *Source) UpdateFormats(formats []LayerFormat) error {
 	source.mu.Lock()
-	closed, count := source.closed, len(source.buffers)
+	closed := source.closed
 	source.mu.Unlock()
 	if closed {
 		return sfu.ErrReceiverClosed
 	}
-	if source.Kind() != webrtc.RTPCodecTypeVideo || len(formats) != count {
+	if source.Kind() != webrtc.RTPCodecTypeVideo || len(formats) != len(source.TrackInfo().Layers) {
 		return errors.New("forwarded video layer count changed")
 	}
 	info := source.TrackInfo()
-	if err := setLayerFormats(info, formats); err != nil {
+	if err := setLayerFormats(info, formats, source.representation); err != nil {
 		return err
 	}
 	source.currentTrackInfo.Store(info)
@@ -224,17 +270,17 @@ func (source *Source) UpdateDimensions(layer int, width, height uint32) error {
 	if source.closed {
 		return sfu.ErrReceiverClosed
 	}
-	if source.Kind() != webrtc.RTPCodecTypeVideo || layer < 0 || layer >= len(source.buffers) || width == 0 || height == 0 {
+	current := source.currentTrackInfo.Load()
+	if source.Kind() != webrtc.RTPCodecTypeVideo || layer < 0 || layer >= len(current.Layers) || width == 0 || height == 0 {
 		return errors.New("forwarded video layer dimensions are invalid")
 	}
-	current := source.currentTrackInfo.Load()
 	if current.Layers[layer].Width == width && current.Layers[layer].Height == height {
 		return nil
 	}
 	info := utils.CloneProto(current)
 	info.Layers[layer].Width, info.Layers[layer].Height = width, height
 	info.Codecs[0].Layers[layer].Width, info.Codecs[0].Layers[layer].Height = width, height
-	if layer == len(source.buffers)-1 {
+	if layer == len(current.Layers)-1 {
 		info.Width, info.Height = width, height
 	}
 	source.currentTrackInfo.Store(info)

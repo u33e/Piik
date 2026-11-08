@@ -814,3 +814,27 @@ func TestDecodeRejectsUnknownEnvelopes(t *testing.T) {
 		}
 	}
 }
+
+// One scalable stream declares its spatial layers without RIDs; only VP9 and
+// AV1 may publish that shape.
+func TestSfuMediaSpatialLayers(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		media string
+		valid bool
+	}{
+		{"vp9 spatial", `{"codec":"vp9","layers":[{"rid":"","width":480,"height":270,"bitrate":400000},{"rid":"","width":960,"height":540,"bitrate":1200000},{"rid":"","width":1920,"height":1080,"bitrate":3600000}],"audio":false,"audioBitrate":0}`, true},
+		{"av1 spatial", `{"codec":"av1","layers":[{"rid":"","width":960,"height":540,"bitrate":1200000},{"rid":"","width":1920,"height":1080,"bitrate":3600000}],"audio":true,"audioBitrate":128000}`, true},
+		{"h264 spatial", `{"codec":"h264","layers":[{"rid":"","width":960,"height":540,"bitrate":1200000},{"rid":"","width":1920,"height":1080,"bitrate":3600000}],"audio":false,"audioBitrate":0}`, false},
+		{"mixed rids", `{"codec":"vp9","layers":[{"rid":"q","width":960,"height":540,"bitrate":1200000},{"rid":"","width":1920,"height":1080,"bitrate":3600000}],"audio":false,"audioBitrate":0}`, false},
+		{"vp8 simulcast", `{"codec":"vp8","layers":[{"rid":"q","width":960,"height":540,"bitrate":1200000},{"rid":"h","width":1920,"height":1080,"bitrate":3600000}],"audio":false,"audioBitrate":0}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var media SfuMedia
+			err := json.Unmarshal([]byte(test.media), &media)
+			if (err == nil) != test.valid {
+				t.Fatalf("valid = %v, err = %v", test.valid, err)
+			}
+		})
+	}
+}

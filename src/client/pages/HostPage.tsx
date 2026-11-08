@@ -196,7 +196,7 @@ import {
   nativeCaptureTargetKey,
   type NativeCapturePath,
 } from "../native/capture-selection";
-import { nativeRelayCapacity, type NativeCaptureTarget, type RemoteControlState } from "../native/wire";
+import { nativeRelayCapacity, type NativeCaptureTarget, type NativeVideoCodec, type RemoteControlState } from "../native/wire";
 import { HostRemoteControl } from "../components/living/HostRemoteControl";
 import { InputRoute } from "../remote-control/input-route";
 import {
@@ -206,6 +206,7 @@ import {
 import {
   automaticVideoCodecPreference,
   manualVideoCodecPreference,
+  sfuVideoCodec,
   supportsH264Receive,
   type BrowserVideoCodec,
   type BrowserVideoCodecMode,
@@ -361,6 +362,15 @@ type ShareSourceSelection =
       showCaptureBorder: boolean;
       path: NativeCapturePath;
     };
+
+const CODEC_HINT_KEYS = {
+  vp8: "host.advanced.codec.vp8Hint",
+  h264: "host.advanced.codec.h264Hint",
+  vp9: "host.advanced.codec.vp9Hint",
+  av1: "host.advanced.codec.av1Hint",
+} as const;
+
+const VIDEO_CODEC_MODES = ["vp8", "auto", "h264", "vp9", "av1"] as const;
 
 export function HostPage({
   roomInteractionsAvailable = false,
@@ -637,6 +647,8 @@ export function HostPage({
   const routePolicyRef = useRef<RoutePolicy>(routePolicy);
   const advancedQualityRef = useRef<QualitySettings>(advancedQuality);
   const videoCodecModeRef = useRef<BrowserVideoCodecMode>(videoCodecMode);
+  // Codecs this server forwards; absent keeps the published H264/VP8 baseline.
+  const sfuVideoCodecsRef = useRef<readonly BrowserVideoCodec[]>(["h264", "vp8"]);
   const roomMutationRef = useRef<object | null>(null);
   const videoCodecRef = useRef<BrowserVideoCodecPreference>(
     VP8_ONLY_VIDEO_CODEC,
@@ -854,7 +866,7 @@ export function HostPage({
     route = new HostSfuRoute({
       getStream: () => streamRef.current,
       getProfile: () => qualitySettingsRef.current,
-      getVideoCodec: () => videoCodecRef.current.primary,
+      getVideoCodec: () => sfuVideoCodec(videoCodecRef.current.primary, sfuVideoCodecsRef.current),
       createPublisher: (onDisconnected, onStats) => {
         const events = {
           send: (message: ClientMessage) => isCurrentGeneration(generation) && hostSfuRouteRef.current === route
@@ -1302,10 +1314,14 @@ export function HostPage({
     );
   }
 
-  function nativeCaptureCodec(client: NativeClient): BrowserVideoCodecMode {
-    if (nativeModeRef.current) return videoCodecRef.current.primary;
+  // The App owns its encoders: H264 and VP8 only. A Browser-only choice keeps
+  // the App's own selection instead of failing that native source.
+  function nativeCaptureCodec(client: NativeClient): NativeVideoCodec | "auto" {
+    const native = (codec: BrowserVideoCodecMode): NativeVideoCodec | "auto" =>
+      codec === "vp9" || codec === "av1" ? "auto" : codec;
+    if (nativeModeRef.current) return native(videoCodecRef.current.primary);
     const mode = videoCodecModeRef.current;
-    return mode === "auto" && client.health.nativeMedia.softwareVP8 && !supportsH264Receive() ? "vp8" : mode;
+    return mode === "auto" && client.health.nativeMedia.softwareVP8 && !supportsH264Receive() ? "vp8" : native(mode);
   }
 
   function failNativePreview(bridge: NativeMediaBridge | null, generation: number, shareGeneration: string): void {
@@ -2548,6 +2564,7 @@ export function HostPage({
     }
     if (message.type === "authenticated" && message.role === "host") {
       discardPreparedHostChild();
+      sfuVideoCodecsRef.current = message.sfuVideoCodecs ?? ["h264", "vp8"];
       routePolicyRef.current = { ...message.routePolicy };
       setRoutePolicy({ ...message.routePolicy });
       const currentQualitySettings =
@@ -4250,14 +4267,14 @@ export function HostPage({
               <div className="lr-door-group">
                 <span className="lr-door-glyph"><Glyph name="puzzle" size={19} /><Cap k="host.advanced.codec" /></span>
                 <div className="lr-row-group" role="group" aria-label={t("host.advanced.codec")}>
-                  {(["vp8", "auto", "h264"] as const).map(mode => (
+                  {VIDEO_CODEC_MODES.map(mode => (
                     <Chip key={mode} name="videoCodec" value={mode} selected={displayedVideoCodecMode === mode}
                       disabled={phase === "starting" || phase === "live"}
                       title={mode === "auto"
                         ? resolvedVideoCodec
                           ? `${t("host.advanced.codec.auto")} (${resolvedVideoCodec.toUpperCase()})`
                           : `${t("host.advanced.codec.auto")}\n${t("host.advanced.codec.autoHint")}`
-                        : `${mode.toUpperCase()}\n${t(mode === "vp8" ? "host.advanced.codec.vp8Hint" : "host.advanced.codec.h264Hint")}`}
+                        : `${mode.toUpperCase()}\n${t(CODEC_HINT_KEYS[mode])}`}
                       hint="hint-codec" onClick={() => changeVideoCodecMode(mode)}>
                       {mode === "auto" && !vis ? t("host.advanced.codec.auto") : mode.toUpperCase()}
                     </Chip>

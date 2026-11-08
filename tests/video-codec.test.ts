@@ -1,5 +1,14 @@
 import { expect, it, vi } from "vitest";
-import { normalizeVideoOfferSdp, requireReceivingVideo, supportsH264Receive, VideoReceiveRejectedError } from "../src/client/webrtc/video-codec";
+import {
+  applyVideoCodecPreference,
+  automaticVideoCodecPreference,
+  sfuVideoCodec,
+  manualVideoCodecPreference,
+  normalizeVideoOfferSdp,
+  requireReceivingVideo,
+  supportsH264Receive,
+  VideoReceiveRejectedError,
+} from "../src/client/webrtc/video-codec";
 
 it("checks H264 receive capability independently of sender support", () => {
   const h264 = { mimeType: "video/H264", clockRate: 90_000, sdpFmtpLine: "packetization-mode=1" };
@@ -63,4 +72,49 @@ it("preserves valid codec parameters, feedback and opaque data without reseriali
     "a=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtcp-fb:96 nack\r\n" +
     "a=rtcp-fb:* transport-cc\r\na=unknown:exact spacing  and values\r\n";
   expect(normalizeVideoOfferSdp(sdp)).toBe(sdp);
+});
+
+it("orders automatic fallbacks quality-first and keeps manual choices strict", () => {
+  const codecs = [
+    { mimeType: "video/H264", clockRate: 90_000, sdpFmtpLine: "packetization-mode=1" },
+    { mimeType: "video/VP8", clockRate: 90_000 },
+    { mimeType: "video/VP9", clockRate: 90_000, sdpFmtpLine: "profile-id=0" },
+    { mimeType: "video/AV1", clockRate: 90_000, sdpFmtpLine: "profile=0" },
+    { mimeType: "video/rtx", clockRate: 90_000 },
+  ];
+  vi.stubGlobal("RTCRtpSender", { getCapabilities: () => ({ codecs }) });
+  const applied: { mimeType: string }[][] = [];
+  const transceiver = {
+    setCodecPreferences: (preference: { mimeType: string }[]) => applied.push(preference),
+  } as unknown as RTCRtpTransceiver;
+  try {
+    expect(applyVideoCodecPreference(transceiver, automaticVideoCodecPreference("av1"))).toBe(true);
+    expect(applied.at(-1)!.map((codec) => codec.mimeType)).toEqual([
+      "video/AV1", "video/VP9", "video/H264", "video/VP8", "video/rtx",
+    ]);
+    expect(applyVideoCodecPreference(transceiver, manualVideoCodecPreference("vp9"))).toBe(true);
+    expect(applied.at(-1)!.map((codec) => codec.mimeType)).toEqual(["video/VP9", "video/rtx"]);
+    expect(applyVideoCodecPreference(transceiver, manualVideoCodecPreference("vp8"))).toBe(true);
+    expect(applied.at(-1)!.map((codec) => codec.mimeType)).toEqual(["video/VP8", "video/rtx"]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("rejects a selection this Browser cannot send and forwards only the SFU set", () => {
+  expect(sfuVideoCodec("av1", ["h264", "vp8", "vp9", "av1"])).toBe("av1");
+  expect(sfuVideoCodec("vp9", ["h264", "vp8", "vp9", "av1"])).toBe("vp9");
+  expect(sfuVideoCodec("av1", ["h264", "vp8"])).toBe("vp8");
+  expect(sfuVideoCodec("h264", ["h264", "vp8"])).toBe("h264");
+  vi.stubGlobal("RTCRtpSender", {
+    getCapabilities: () => ({ codecs: [{ mimeType: "video/VP8", clockRate: 90_000 }] }),
+  });
+  const transceiver = { setCodecPreferences: vi.fn() } as unknown as RTCRtpTransceiver;
+  try {
+    expect(applyVideoCodecPreference(transceiver, manualVideoCodecPreference("av1"))).toBe(false);
+    expect(applyVideoCodecPreference(transceiver, manualVideoCodecPreference("h264"))).toBe(false);
+    expect(applyVideoCodecPreference(transceiver, manualVideoCodecPreference("vp8"))).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

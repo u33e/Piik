@@ -1,6 +1,6 @@
 # Current TODO Ledger
 
-Last reviewed: 2026-11-04
+Last reviewed: 2026-11-08
 
 This ledger contains unfinished work and explicit owner holds. Product modules
 own behavior; research and Git/PRs own evidence and completed history.
@@ -52,6 +52,23 @@ own behavior; research and Git/PRs own evidence and completed history.
 
 ## Next
 
+- [ ] **LiveKit-shaped SFU edge, remaining stages.**
+  [ADR-0016](./adr/0016-livekit-shaped-sfu-edge.md) landed the media model:
+  representation is explicit (`simulcast` RIDs or one spatial SVC stream),
+  ingress binds a single stream for SVC, the publication sends one encoding, and
+  the server advertises `vp9`/`av1` so a Browser share publishes them directly.
+  Upload gating was closed by inspection (one demand owner; a contiguous count
+  equals a layer set for two ordered layers), and the codec declaration with its
+  capability advertisement landed. The embedded gate now carries a scalable arm:
+  `PIIK_EMBEDDED_SFU_CODEC=vp9` passes end-to-end in Chrome (full size, layer
+  drop under a low ceiling, retirement, recovery). AV1 does not reach a
+  first frame at 720p on this machine's software encoder, so its arm fails
+  visibly instead of proving delivery; run it only on hardware AV1.
+- [ ] **VP9/AV1 share acceptance.** Verify the quality-first codec ladder on
+  Windows and macOS Chrome: which candidate the probe proves at 1080p30, its
+  startup cost, Host CPU with several Viewers, and Viewer decode on
+  Safari/Firefox where the fallback tail decides. Confirm a VP9/AV1 share still
+  reaches an SFU-only Viewer through its VP8 publication.
 - [ ] **Stronger microphone noise suppression (#518).** Assess the
   [requested speech-processing option](https://github.com/TNTcraftHIM/Piik/issues/518)
   through the shared microphone input. Browser voice processing is already the

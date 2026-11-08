@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  h264ProbeTarget,
-  h264ProbeSustainsTarget,
+  probeTarget,
+  probeSustainsTarget,
   preferredVideoCodecForTrack,
-  type H264ProbeSample,
+  type ProbeSample,
 } from "../src/client/webrtc/video-codec-preflight.ts";
 import { QUALITY_PROFILES } from "../src/client/media/quality.ts";
 
 function sample(
-  overrides: Partial<H264ProbeSample> = {},
-): H264ProbeSample {
+  overrides: Partial<ProbeSample> = {},
+): ProbeSample {
   return {
     outboundId: "outbound",
     sourceId: "source",
@@ -25,10 +25,10 @@ function sample(
   };
 }
 
-describe("H264 sender preflight", () => {
+describe("sender preflight", () => {
   it("uses the selected target cadence instead of captured-content cadence", () => {
     expect(
-      h264ProbeTarget(
+      probeTarget(
         { width: 2_560, height: 1_440, frameRate: 1 },
         QUALITY_PROFILES["1080p30"],
       ),
@@ -43,7 +43,7 @@ describe("H264 sender preflight", () => {
       sourceFrames: 40,
     });
 
-    expect(h264ProbeSustainsTarget(baseline, current, 30)).toBe(true);
+    expect(probeSustainsTarget(baseline, current, 30)).toBe(true);
   });
 
   it("rejects sustained encoder frame dropping", () => {
@@ -56,14 +56,14 @@ describe("H264 sender preflight", () => {
       sourceFramesPerSecond: 30,
     });
 
-    expect(h264ProbeSustainsTarget(baseline, current, 30)).toBe(false);
+    expect(probeSustainsTarget(baseline, current, 30)).toBe(false);
   });
 
   it("requires real progress even when one frame is within the cadence tolerance", () => {
     for (const [source, encoded, expected] of [[0, 0, false], [1, 0, false], [0, 1, false], [1, 1, true]] as const) {
-      expect(h264ProbeSustainsTarget(sample(), sample({ timestamp: 2_000,
+      expect(probeSustainsTarget(sample(), sample({ timestamp: 2_000,
         sourceFrames: 10 + source, framesEncoded: 10 + encoded }), 1)).toBe(expected);
-      expect(h264ProbeSustainsTarget(sample(), sample({ timestamp: 2_000,
+      expect(probeSustainsTarget(sample(), sample({ timestamp: 2_000,
         sourceFrames: null, framesEncoded: null,
         sourceFramesPerSecond: source, encodedFramesPerSecond: encoded }), 1)).toBe(expected);
     }
@@ -77,14 +77,14 @@ describe("H264 sender preflight", () => {
       sourceFrames: 20,
     });
 
-    expect(h264ProbeSustainsTarget(baseline, current, 30)).toBeNull();
+    expect(probeSustainsTarget(baseline, current, 30)).toBeNull();
   });
 
   it("rejects CPU-limited or identity-mismatched samples", () => {
     const baseline = sample();
 
     expect(
-      h264ProbeSustainsTarget(
+      probeSustainsTarget(
         baseline,
         sample({
           timestamp: 2_000,
@@ -96,7 +96,7 @@ describe("H264 sender preflight", () => {
       ),
     ).toBe(false);
     expect(
-      h264ProbeSustainsTarget(
+      probeSustainsTarget(
         baseline,
         sample({
           outboundId: "replacement",
@@ -107,13 +107,25 @@ describe("H264 sender preflight", () => {
         30,
       ),
     ).toBe(false);
+    expect(
+      probeSustainsTarget(
+        baseline,
+        sample({
+          timestamp: 2_000,
+          framesEncoded: 40,
+          sourceFrames: 40,
+          codec: "video/VP9",
+        }),
+        30,
+      ),
+    ).toBe(false);
   });
 
   it("uses reported cadence when cumulative source frames are unavailable", () => {
     const baseline = sample({ framesEncoded: null, sourceFrames: null });
 
     expect(
-      h264ProbeSustainsTarget(
+      probeSustainsTarget(
         baseline,
         sample({
           timestamp: 2_000,
@@ -126,7 +138,7 @@ describe("H264 sender preflight", () => {
       ),
     ).toBe(true);
     expect(
-      h264ProbeSustainsTarget(
+      probeSustainsTarget(
         baseline,
         sample({
           timestamp: 2_000,
@@ -139,7 +151,7 @@ describe("H264 sender preflight", () => {
       ),
     ).toBe(false);
     expect(
-      h264ProbeSustainsTarget(
+      probeSustainsTarget(
         baseline,
         sample({
           timestamp: 1_500,
@@ -155,7 +167,7 @@ describe("H264 sender preflight", () => {
 
   it("rejects a probe source that does not reach the selected cadence", () => {
     expect(
-      h264ProbeSustainsTarget(
+      probeSustainsTarget(
         sample(),
         sample({
           timestamp: 2_000,
@@ -295,6 +307,90 @@ describe("codec probe lifetime", () => {
     await expect(run).resolves.toBe("h264");
     expect(f.track.stop).toHaveBeenCalledOnce();
     expect(f.source.stop).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("codec ladder", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function ladderFixture(
+    advertised: string[],
+    encodedFps: (mimeType: string) => number,
+  ) {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const source = { kind: "video", readyState: "live", getSettings: () => ({}), stop: vi.fn() };
+    const track = { ...source, stop: vi.fn() };
+    vi.stubGlobal("document", {
+      createElement: () => ({
+        getContext: () => ({ fillRect() {} }),
+        captureStream: () => ({ getVideoTracks: () => [track] }),
+      }),
+    });
+    vi.stubGlobal("RTCRtpSender", {
+      getCapabilities: () => ({
+        codecs: advertised.map((mimeType) => ({ mimeType, clockRate: 90_000 })),
+      }),
+    });
+    let negotiated = "video/VP8";
+    class Connection {
+      close = vi.fn();
+      addEventListener() {}
+      localDescription = { type: "offer", sdp: "fixture" };
+      setLocalDescription = vi.fn(async () => {});
+      async setRemoteDescription() {}
+      async createOffer() { return this.localDescription; }
+      async createAnswer() { return { type: "answer", sdp: "fixture" }; }
+      addTransceiver() {
+        return {
+          setCodecPreferences(codecs: { mimeType: string }[]) {
+            negotiated = codecs[0]!.mimeType;
+          },
+          sender: {
+            track,
+            getParameters: () => ({ encodings: [{}] }),
+            setParameters: async () => {},
+            getStats: async () => {
+              const timestamp = Date.now();
+              const frames = timestamp * encodedFps(negotiated) / 1_000;
+              return new Map([
+                ["out", { id: "out", type: "outbound-rtp", kind: "video", timestamp,
+                  codecId: "codec", mediaSourceId: "source", framesEncoded: frames }],
+                ["codec", { type: "codec", mimeType: negotiated }],
+                ["source", { id: "source", type: "media-source", kind: "video",
+                  frames: timestamp * 30 / 1_000 }],
+              ]);
+            },
+          },
+        };
+      }
+    }
+    vi.stubGlobal("RTCPeerConnection", Connection);
+    return { source: source as unknown as MediaStreamTrack, track };
+  }
+
+  it("takes the first candidate that sustains the selected profile", async () => {
+    const f = ladderFixture(
+      ["video/AV1", "video/VP9", "video/H264", "video/VP8"],
+      (mimeType) => mimeType.toLowerCase() === "video/av1" ? 9 : 30,
+    );
+    const run = preferredVideoCodecForTrack(f.source, QUALITY_PROFILES["1080p30"]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    await expect(run).resolves.toBe("vp9");
+    expect(f.track.stop).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps VP8 when no advertised candidate sustains", async () => {
+    const f = ladderFixture(["video/AV1", "video/VP8"], () => 6);
+    const run = preferredVideoCodecForTrack(f.source, QUALITY_PROFILES["1080p30"]);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await expect(run).resolves.toBe("vp8");
+    expect(f.track.stop).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
   });
 });

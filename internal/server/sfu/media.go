@@ -25,6 +25,35 @@ type PublicationMedia struct {
 	AudioBitrate uint32
 }
 
+// spatial reports one SVC stream carrying multiple spatial layers, which has no
+// per-layer RIDs. A single layer keeps the legacy simulcast shape.
+func (media PublicationMedia) spatial() bool {
+	if len(media.RIDs) < 2 {
+		return false
+	}
+	for _, rid := range media.RIDs {
+		if rid != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// streams is the number of encoded streams the publisher sends.
+func (media PublicationMedia) streams() int {
+	if media.spatial() {
+		return 1
+	}
+	return len(media.Formats)
+}
+
+func (media PublicationMedia) representation() forwarding.Representation {
+	if media.spatial() {
+		return forwarding.Representation{Spatial: true}
+	}
+	return forwarding.Representation{RIDs: media.RIDs}
+}
+
 type MediaEvent struct {
 	Fence        ResourceFence
 	ViewerPeerID string // Empty for the publisher.
@@ -129,10 +158,15 @@ func (media *Media) HasPublication(fence ResourceFence, connectionID string) boo
 }
 
 func validPublicationMedia(metadata PublicationMedia) bool {
-	if (metadata.Codec != "h264" && metadata.Codec != "vp8") ||
+	if (metadata.Codec != "h264" && metadata.Codec != "vp8" &&
+		metadata.Codec != "vp9" && metadata.Codec != "av1") ||
 		len(metadata.Formats) < 1 || len(metadata.Formats) > 3 ||
 		len(metadata.RIDs) != len(metadata.Formats) ||
 		(metadata.Audio && metadata.AudioBitrate == 0) {
+		return false
+	}
+	spatial := metadata.spatial()
+	if spatial && metadata.Codec != "vp9" && metadata.Codec != "av1" {
 		return false
 	}
 	for index, format := range metadata.Formats {
@@ -141,8 +175,8 @@ func validPublicationMedia(metadata PublicationMedia) bool {
 		if format.Width == 0 || format.Width > 8192 || format.Height == 0 || format.Height > 8192 ||
 			format.Bitrate == 0 || format.Bitrate > 240_000_000 ||
 			len(metadata.RIDs[index]) > 16 ||
-			(metadata.RIDs[index] == "" && len(metadata.RIDs) != 1) ||
-			slices.Contains(metadata.RIDs[:index], metadata.RIDs[index]) {
+			(metadata.RIDs[index] == "" && len(metadata.RIDs) != 1 && !spatial) ||
+			metadata.RIDs[index] != "" && slices.Contains(metadata.RIDs[:index], metadata.RIDs[index]) {
 			return false
 		}
 	}
@@ -164,7 +198,7 @@ func (media *Media) PreparePublication(fence ResourceFence, connectionID string,
 	metadata.RIDs = slices.Clone(metadata.RIDs)
 	publication := &mediaPublication{
 		owner: media, fence: fence, connectionID: connectionID, metadata: metadata,
-		ready: make(chan struct{}), layers: make([]bool, len(metadata.Formats)),
+		ready: make(chan struct{}), layers: make([]bool, metadata.streams()),
 		subscribers: make(map[subscriptionKey]*mediaSubscription),
 		demandWake:  make(chan struct{}, 1), demandStop: make(chan struct{}), demandDone: make(chan struct{}),
 	}
@@ -237,7 +271,7 @@ func (publication *mediaPublication) requiredActiveCount() int {
 		publication.mu.Unlock()
 		return 0
 	}
-	count, bootstrap := len(publication.metadata.Formats), false
+	count, bootstrap := publication.metadata.streams(), false
 	transports := make([]*forwarding.Transport, 0, len(publication.subscribers))
 	for _, subscriber := range publication.subscribers {
 		if subscriber.ctx.Err() != nil {
@@ -432,7 +466,10 @@ func (media *Media) UpdatePublication(fence ResourceFence, connectionID string, 
 func (publication *mediaPublication) consumeTrack(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 	video := track.Kind() == webrtc.RTPCodecTypeVideo
 	publication.mu.Lock()
-	layer := slices.Index(publication.metadata.RIDs, track.RID())
+	layer := 0
+	if !publication.metadata.spatial() {
+		layer = slices.Index(publication.metadata.RIDs, track.RID())
+	}
 	if publication.closed || publication.failure != nil {
 		publication.mu.Unlock()
 		return
@@ -451,6 +488,7 @@ func (publication *mediaPublication) consumeTrack(track *webrtc.TrackRemote, rec
 			publication.source, err = forwarding.NewSource(forwarding.SourceOptions{
 				ID: publication.fence.PublicationGeneration, StreamID: publication.fence.PublicationGeneration,
 				Codec: track.Codec(), Formats: publication.metadata.Formats,
+				Representation:   publication.metadata.representation(),
 				HeaderExtensions: receiver.GetParameters().HeaderExtensions,
 				OnRTCP: func(_ int, packets []rtcp.Packet) {
 					// The buffer sees repaired primary sequence numbers and owns NACK;

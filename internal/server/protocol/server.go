@@ -13,25 +13,28 @@ type ServerMessage interface {
 
 // AuthenticatedHostMessage returns the Host's current room and transport facts.
 type AuthenticatedHostMessage struct {
-	Type                          string                     `json:"type"`
-	Protocol                      string                     `json:"protocol"`
-	PeerID                        string                     `json:"peerId"`
-	MaxViewers                    Int                        `json:"maxViewers"`
-	EndpointMediaCopyCapacity     Int                        `json:"endpointMediaCopyCapacity"`
-	HostOnline                    bool                       `json:"hostOnline"`
-	HostPaused                    *bool                      `json:"hostPaused,omitempty"`
-	ConnectionID                  *string                    `json:"connectionId"`
-	IceConfig                     IceConfig                  `json:"iceConfig"`
-	RoutePolicy                   RoutePolicy                `json:"routePolicy"`
-	CodeEntryPolicy               CodeEntryPolicy            `json:"codeEntryPolicy"`
-	ViewerAuthorizationGeneration string                     `json:"viewerAuthorizationGeneration"`
-	MediaMode                     string                     `json:"mediaMode"`
-	ShareGeneration               *string                    `json:"shareGeneration"`
-	RouteRevision                 Int                        `json:"routeRevision"`
-	RouteAssignment               ParticipantRouteAssignment `json:"routeAssignment"`
-	QualitySettings               QualitySettings            `json:"qualitySettings"`
-	Role                          Role                       `json:"role"`
-	ViewerPasswordEnabled         bool                       `json:"viewerPasswordEnabled"`
+	Type                          string          `json:"type"`
+	Protocol                      string          `json:"protocol"`
+	PeerID                        string          `json:"peerId"`
+	MaxViewers                    Int             `json:"maxViewers"`
+	EndpointMediaCopyCapacity     Int             `json:"endpointMediaCopyCapacity"`
+	HostOnline                    bool            `json:"hostOnline"`
+	HostPaused                    *bool           `json:"hostPaused,omitempty"`
+	ConnectionID                  *string         `json:"connectionId"`
+	IceConfig                     IceConfig       `json:"iceConfig"`
+	RoutePolicy                   RoutePolicy     `json:"routePolicy"`
+	CodeEntryPolicy               CodeEntryPolicy `json:"codeEntryPolicy"`
+	ViewerAuthorizationGeneration string          `json:"viewerAuthorizationGeneration"`
+	MediaMode                     string          `json:"mediaMode"`
+	// SfuVideoCodecs lists the codecs this server forwards. Absent keeps the
+	// published H264/VP8 baseline.
+	SfuVideoCodecs        []string                   `json:"sfuVideoCodecs,omitempty"`
+	ShareGeneration       *string                    `json:"shareGeneration"`
+	RouteRevision         Int                        `json:"routeRevision"`
+	RouteAssignment       ParticipantRouteAssignment `json:"routeAssignment"`
+	QualitySettings       QualitySettings            `json:"qualitySettings"`
+	Role                  Role                       `json:"role"`
+	ViewerPasswordEnabled bool                       `json:"viewerPasswordEnabled"`
 }
 
 // AuthenticatedViewerMessage is the viewer member of

@@ -1,28 +1,55 @@
 import { parse } from "sdp-transform";
 
-export type BrowserVideoCodec = "h264" | "vp8";
-export type BrowserVideoCodecMode = "vp8" | "auto" | "h264";
+export type BrowserVideoCodec = "h264" | "vp8" | "vp9" | "av1";
+export type BrowserVideoCodecMode = "vp8" | "auto" | "h264" | "vp9" | "av1";
+/** Scalable codecs publish one stream carrying several spatial layers. */
+export function isScalableVideoCodec(codec: BrowserVideoCodec): boolean {
+  return codec === "vp9" || codec === "av1";
+}
 
 export interface BrowserVideoCodecPreference {
   primary: BrowserVideoCodec;
-  vp8Fallback: boolean;
+  /** Ordered codecs an automatic negotiation may select instead. */
+  fallbacks: BrowserVideoCodec[];
 }
 
 export const VP8_ONLY_VIDEO_CODEC: BrowserVideoCodecPreference = {
   primary: "vp8",
-  vp8Fallback: false,
+  fallbacks: [],
 };
+
+/** Quality-first order: Auto proves candidates in this order, and an automatic
+ * negotiation keeps the same tail so a Viewer without the selected codec still
+ * negotiates the next best one instead of losing video. */
+export const VIDEO_CODEC_QUALITY_ORDER: readonly BrowserVideoCodec[] = [
+  "av1",
+  "vp9",
+  "h264",
+  "vp8",
+];
 
 export function automaticVideoCodecPreference(
   codec: BrowserVideoCodec,
 ): BrowserVideoCodecPreference {
-  return { primary: codec, vp8Fallback: codec === "h264" };
+  return {
+    primary: codec,
+    fallbacks: VIDEO_CODEC_QUALITY_ORDER.filter((candidate) => candidate !== codec),
+  };
 }
 
 export function manualVideoCodecPreference(
   codec: BrowserVideoCodec,
 ): BrowserVideoCodecPreference {
-  return { primary: codec, vp8Fallback: false };
+  return { primary: codec, fallbacks: [] };
+}
+
+/** The codec this server may forward for one share: the share codec when the
+ * server advertises it, otherwise VP8 rather than losing that fallback route. */
+export function sfuVideoCodec(
+  codec: BrowserVideoCodec,
+  supported: readonly BrowserVideoCodec[],
+): BrowserVideoCodec {
+  return supported.includes(codec) ? codec : "vp8";
 }
 
 const REPAIR_CODEC_MIME_TYPES = new Set([
@@ -36,9 +63,12 @@ function videoCapabilities(): RTCRtpCodec[] {
   return RTCRtpSender.getCapabilities?.("video")?.codecs ?? [];
 }
 
-function vp8Codecs(codecs: readonly RTCRtpCodec[]): RTCRtpCodec[] {
+function mimeTypeCodecs(
+  codecs: readonly RTCRtpCodec[],
+  mimeType: string,
+): RTCRtpCodec[] {
   return codecs.filter(
-    ({ mimeType }) => mimeType.toLowerCase() === "video/vp8",
+    ({ mimeType: candidate }) => candidate.toLowerCase() === mimeType,
   );
 }
 
@@ -52,6 +82,27 @@ function h264ModeOneCodecs(codecs: readonly RTCRtpCodec[]): RTCRtpCodec[] {
       /(?:^|;)\s*packetization-mode=1(?:;|$)/i.test(sdpFmtpLine)
     );
   });
+}
+
+function codecsFor(
+  codec: BrowserVideoCodec,
+  codecs: readonly RTCRtpCodec[],
+): RTCRtpCodec[] {
+  switch (codec) {
+    case "h264":
+      return h264ModeOneCodecs(codecs);
+    case "vp8":
+      return mimeTypeCodecs(codecs, "video/vp8");
+    case "vp9":
+      return mimeTypeCodecs(codecs, "video/vp9");
+    case "av1":
+      return mimeTypeCodecs(codecs, "video/av1");
+  }
+}
+
+export function supportsVideoCodecSend(codec: BrowserVideoCodec): boolean {
+  return typeof RTCRtpSender !== "undefined" &&
+    codecsFor(codec, videoCapabilities()).length > 0;
 }
 
 export function supportsH264Receive(): boolean {
@@ -88,35 +139,30 @@ export function applyVideoCodecPreference(
     return false;
   }
   const codecs = videoCapabilities();
-  const vp8 = vp8Codecs(codecs);
-  if (
-    (preference.primary === "vp8" || preference.vp8Fallback) &&
-    vp8.length === 0
-  ) {
+  const primary = codecsFor(preference.primary, codecs);
+  if (primary.length === 0) {
     return false;
   }
-  const h264 =
-    preference.primary === "h264" ? h264ModeOneCodecs(codecs) : [];
-  if (preference.primary === "h264" && h264.length === 0) {
-    return false;
+  const ordered = [primary];
+  for (const fallback of preference.fallbacks) {
+    const group = codecsFor(fallback, codecs);
+    if (group.length > 0) ordered.push(group);
   }
-  return applyCodecs(transceiver, [
-    ...h264,
-    ...(preference.primary === "vp8" || preference.vp8Fallback ? vp8 : []),
-    ...repairCodecs(codecs),
-  ]);
+  return applyCodecs(transceiver, [...ordered.flat(), ...repairCodecs(codecs)]);
 }
 
-export function applyH264ProbeCodec(
+/** Restrict one probe connection to the candidate codec being measured. */
+export function applyProbeCodec(
   transceiver: RTCRtpTransceiver,
+  codec: BrowserVideoCodec,
 ): boolean {
   if (typeof RTCRtpSender === "undefined") {
     return false;
   }
   const codecs = videoCapabilities();
-  const h264 = h264ModeOneCodecs(codecs);
-  return h264.length > 0 &&
-    applyCodecs(transceiver, [...h264, ...repairCodecs(codecs)]);
+  const selected = codecsFor(codec, codecs);
+  return selected.length > 0 &&
+    applyCodecs(transceiver, [...selected, ...repairCodecs(codecs)]);
 }
 
 /** Remove only attributes of codecs excluded from a locally generated offer.

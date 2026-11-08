@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-19
-- Last reviewed: 2026-09-01
+- Last reviewed: 2026-11-08
 
 [ADR-0013](./0013-embedded-node-local-media.md) supersedes the external SFU SDK,
 Dynacast-service and single-output Native assumptions for the current candidate.
@@ -30,18 +30,22 @@ it does not need a second bitrate, resolution, FPS, or layer-control system.
 
 1. Browser video makes one internal, share-generation-scoped codec decision per
    sending endpoint. A bounded
-   actual-`RTCPeerConnection` preflight measures H.264 encoded progress against
-   a deterministic moving probe track at the current share's effective target
-   dimensions and frame rate. The real capture supplies those target settings,
-   but its current motion does not decide encoder capability. A proved sender
-   prefers H.264 and retains VP8 as
-   the native negotiation fallback; an unsupported, inconclusive, slow, or
-   failed preflight uses VP8 only. The Host advanced settings expose one local
-   `VP8 | Auto | H264` selector with Auto default: it is editable only before a
-   share, strict H264/VP8 bypass the gate, and share start locks it. Viewer relay
-   senders remain Auto. The selection is not persisted or inferred from UA, GPU,
-   capability advertisement, or `powerEfficientEncoder` alone; it creates no
-   room state, wire field, or active-edge codec switching.
+   actual-`RTCPeerConnection` preflight measures encoded progress for each
+   candidate against a deterministic moving probe track at the current share's
+   effective target dimensions and frame rate. The real capture supplies those
+   target settings, but its current motion does not decide encoder capability.
+   Candidates are proved in quality-first order — AV1, VP9, H264, VP8 — and the
+   first sustaining pipeline wins; each candidate owns a four-second deadline and
+   the ladder a ten-second one, and an unsupported, inconclusive, slow, failed or
+   absent candidate rejects only itself. A cancelled probe, an unavailable probe
+   source, or a ladder without a sustaining candidate uses VP8. The Host advanced
+   settings expose one local `Auto | H264 | VP8 | VP9 | AV1` selector with Auto
+   default: it is editable only before a share, strict choices bypass the gate,
+   and share start locks it. Native capture keeps H264 and VP8 because the App
+   owns its encoders, so a Browser-only choice leaves that App selection intact.
+   Viewer relay senders remain Auto. The selection is not persisted or inferred
+   from UA, GPU, capability advertisement, or `powerEfficientEncoder` alone; it
+   creates no room state, wire field, or active-edge codec switching.
 2. Display video uses the standard `contentHint = "motion"`; display audio uses
    `contentHint = "music"`. The hint expresses content intent and does not
    promise a resolution, frame rate, bitrate, encoder, or hardware path.
@@ -57,17 +61,21 @@ it does not need a second bitrate, resolution, FPS, or layer-control system.
    teardown. After accepting an answer, the Host still reapplies the current video profile to
    the negotiated sender because the browser may replace or rewrite encoding
    parameters during negotiation.
-5. Auto direct and Browser-relay offers with a proved sender order H.264 before
-   VP8 in one standard codec-preference list; endpoints select their first common
-   codec without a parallel media connection. Failed Auto or manual VP8 offers
-   VP8 only; manual H264 offers H.264 mode 1 only. Existing edges are not
-   renegotiated when a later relay gate completes; its result applies to future
-   children.
-6. The SFU publisher uses the Host source decision and one sender-owned clone for
-   its publication, disables backup codec, sets the selected HIGH ceiling and
-   degradation preference, but does not set `screenShareSimulcastLayers`, mutate
-   lower encodings, or select a subscriber layer. Pinned LiveKit defaults own the
-   selected codec's representation set and source-replacement/republish behavior.
+5. Auto direct and Browser-relay offers with a proved sender offer that codec
+   first and the remaining quality order after it, so endpoints select their
+   first common codec without a parallel media connection; a manual choice offers
+   only that codec. Existing edges are not renegotiated when a later relay gate
+   completes; its result applies to future children.
+6. The SFU publisher uses the Host source decision narrowed to the codecs the
+   server advertises. [ADR-0016](./0016-livekit-shaped-sfu-edge.md) ports
+   LiveKit's media-edge shape; H264 and VP8 publish RID simulcast, VP9 and AV1
+   publish one scalable stream. A server without that advertisement keeps the
+   H264/VP8 baseline. It uses one
+   sender-owned clone for its publication, disables backup codec, sets the
+   selected HIGH ceiling and degradation preference, but does not set
+   `screenShareSimulcastLayers`, mutate lower encodings, or select a subscriber
+   layer. Pinned LiveKit defaults own the selected codec's representation set and
+   source-replacement/republish behavior.
 7. LiveKit Dynacast and server send-side BWE remain enabled. AdaptiveStream
    remains disabled because a Viewer may relay its received track to peer
    children; local DOM size or visibility cannot represent that downstream
@@ -146,7 +154,7 @@ than claiming complete source isolation.
 
 - No Piik resolution/FPS/bitrate ladder or representation formula.
 - No codec wire/state, GPU/MFT allowlist, persistent codec cache, parallel
-  VP8/H.264 route, active-edge codec churn, or LiveKit backup publication. The
+  per-codec route, active-edge codec churn, or LiveKit backup publication. The
   local pre-share Host selector is the only manual codec surface.
 - No manual SFU layer selector, forced single HIGH publication, or per-Viewer
   encoder.

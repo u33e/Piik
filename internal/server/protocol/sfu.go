@@ -1,6 +1,9 @@
 package protocol
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // SfuMedia describes the publisher's real encodings, ordered low to high.
 type SfuMedia struct {
@@ -26,14 +29,26 @@ func (value *SfuMedia) UnmarshalJSON(data []byte) error {
 	if err := present.require("codec", "layers", "audio", "audioBitrate"); err != nil {
 		return err
 	}
-	if !enumOf(value.Codec, "h264", "vp8") || len(value.Layers) < 1 || len(value.Layers) > 3 ||
+	if !enumOf(value.Codec, "h264", "vp8", "vp9", "av1") ||
+		len(value.Layers) < 1 || len(value.Layers) > 3 ||
 		!inRangeInt(value.AudioBitrate, 0, MaxAudioBitrate) || value.Audio && value.AudioBitrate == 0 {
 		return errors.New("invalid SFU media")
 	}
+	// One SVC stream carries several spatial layers and therefore no RIDs. Only
+	// the scalable codecs may publish that shape.
+	spatial := len(value.Layers) > 1 && !slices.ContainsFunc(value.Layers, func(layer SfuLayer) bool {
+		return layer.RID != ""
+	})
+	if spatial && value.Codec != "vp9" && value.Codec != "av1" {
+		return errors.New("invalid SFU media")
+	}
 	for index, layer := range value.Layers {
-		if len(layer.RID) > 16 || layer.RID == "" && len(value.Layers) != 1 ||
+		if len(layer.RID) > 16 || layer.RID == "" && len(value.Layers) != 1 && !spatial ||
 			!inRangeInt(layer.Width, 1, 0xffff_ffff) || !inRangeInt(layer.Height, 1, 0xffff_ffff) || !inRangeInt(layer.Bitrate, 1, 0xffff_ffff) {
 			return errors.New("invalid SFU layer")
+		}
+		if layer.RID == "" {
+			continue
 		}
 		for _, previous := range value.Layers[:index] {
 			if previous.RID == layer.RID {

@@ -21,6 +21,7 @@ import { cloneSenderVideoTrack, senderCaptureTrack, stopSenderVideoTrack } from 
 import type { ConnectionMetrics } from "../types";
 import {
   applyVideoCodecPreference,
+  isScalableVideoCodec,
   manualVideoCodecPreference,
   type BrowserVideoCodec,
 } from "../webrtc/video-codec";
@@ -169,8 +170,9 @@ export class SfuPublisher {
         this.audio = this.ownTrack(stream.getAudioTracks()[0]?.clone() ?? null);
         this.setPaused(this.paused);
         const dimensions = senderCaptureTrack(video).getSettings();
-        this.layerCount =
-          Math.max(dimensions.width ?? 0, dimensions.height ?? 0) >= 480
+        this.layerCount = isScalableVideoCodec(codec)
+          ? 1
+          : Math.max(dimensions.width ?? 0, dimensions.height ?? 0) >= 480
             ? 2
             : 1;
         const videoTransceiver = peer.pc.addTransceiver(video, {
@@ -435,6 +437,18 @@ export class SfuPublisher {
   }
 
   private encodings(profile: QualityProfile): RTCRtpEncodingParameters[] {
+    // One scalable stream carries every spatial layer; the SFU picks per
+    // subscriber through the dependency descriptor instead of RID activation.
+    if (isScalableVideoCodec(this.codec)) {
+      return [{
+        active: this.activeCount > 0,
+        // Chrome publishes SVC through this WebRTC extension; older DOM typings
+        // do not describe it.
+        scalabilityMode: "L3T3",
+        maxBitrate: profile.maxBitrate,
+        maxFramerate: profile.maxFramerate,
+      } as RTCRtpEncodingParameters];
+    }
     const settings = this.video ? senderCaptureTrack(this.video).getSettings() : undefined;
     const ceiling = profile.resolution;
     const width = settings?.width ?? ceiling.width;
@@ -467,6 +481,22 @@ export class SfuPublisher {
   private media(profile: QualityProfile): SfuMedia {
     const settings = senderCaptureTrack(this.video!).getSettings();
     const ceiling = profile.resolution;
+    if (isScalableVideoCodec(this.codec)) {
+      const width = settings.width ?? ceiling.width;
+      const height = settings.height ?? ceiling.height;
+      return {
+        codec: this.codec,
+        // Descending spatial layers of one stream: quarter, half and full size.
+        layers: [4, 2, 1].map((divisor, index) => ({
+          rid: "",
+          width: Math.max(1, Math.floor(width / divisor)),
+          height: Math.max(1, Math.floor(height / divisor)),
+          bitrate: Math.max(1, Math.floor(profile.maxBitrate / 3 ** (2 - index))),
+        })),
+        audio: this.audio !== null,
+        audioBitrate: screenAudioBitrate(profile.maxAudioBitrate),
+      };
+    }
     return {
       codec: this.codec,
       layers: this.encodings(profile).map((encoding) => ({

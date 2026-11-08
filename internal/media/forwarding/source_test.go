@@ -181,3 +181,33 @@ func TestSourceLayerBindingFeedbackAndClose(t *testing.T) {
 		t.Fatal("closed source accepted new metadata")
 	}
 }
+
+// A single-stream publication declares spatial layers without RIDs and binds
+// one input; the library's SVC selector then picks layers per subscriber.
+func TestSpatialSourceDeclaresOneStream(t *testing.T) {
+	codec := webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP9, ClockRate: 90_000},
+		PayloadType:        96,
+	}
+	source, err := NewSource(SourceOptions{
+		ID: "track", StreamID: "stream", Codec: codec,
+		Formats:        []LayerFormat{{Width: 480, Height: 270, Bitrate: 400_000}, {Width: 960, Height: 540, Bitrate: 1_200_000}, {Width: 1_920, Height: 1_080, Bitrate: 3_600_000}},
+		Representation: Representation{Spatial: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSource: %v", err)
+	}
+	defer source.Close()
+	info := source.TrackInfo()
+	if source.Streams() != 1 {
+		t.Fatalf("streams = %d, want 1", source.Streams())
+	}
+	if len(info.Layers) != 3 || info.Codecs[0].VideoLayerMode != livekit.VideoLayer_MULTIPLE_SPATIAL_LAYERS_PER_STREAM {
+		t.Fatalf("layers = %d mode = %v", len(info.Layers), info.Codecs[0].VideoLayerMode)
+	}
+	for _, layer := range info.Layers {
+		if layer.Rid != "" {
+			t.Fatalf("spatial layer declared rid %q", layer.Rid)
+		}
+	}
+}

@@ -415,8 +415,11 @@ export const signalPayloadSchema = z.discriminatedUnion("kind", [
 ]);
 export type SignalPayload = z.infer<typeof signalPayloadSchema>;
 
+const scalableSfuCodec = (codec: "h264" | "vp8" | "vp9" | "av1") =>
+  codec === "vp9" || codec === "av1";
+
 export const sfuMediaSchema = z.object({
-  codec: z.enum(["h264", "vp8"]),
+  codec: z.enum(["h264", "vp8", "vp9", "av1"]),
   layers: z.array(z.object({
     rid: z.string().max(16),
     width: positiveUint32Schema,
@@ -425,11 +428,15 @@ export const sfuMediaSchema = z.object({
   }).strict()).min(1).max(3),
   audio: z.boolean(),
   audioBitrate: z.number().int().min(0).max(MAX_AUDIO_BITRATE),
-}).strict().refine((media) =>
-  (!media.audio || media.audioBitrate > 0) &&
-  new Set(media.layers.map((layer) => layer.rid)).size === media.layers.length &&
-  (media.layers.length === 1 || media.layers.every((layer) => layer.rid !== "")),
-);
+}).strict().refine((media) => {
+  const spatial = media.layers.length > 1 &&
+    media.layers.every((layer) => layer.rid === "");
+  const rids = media.layers.map((layer) => layer.rid).filter((rid) => rid !== "");
+  return (!media.audio || media.audioBitrate > 0) &&
+    (!spatial || scalableSfuCodec(media.codec)) &&
+    new Set(rids).size === rids.length &&
+    (spatial || media.layers.length === 1 || rids.length === media.layers.length);
+});
 export type SfuMedia = z.infer<typeof sfuMediaSchema>;
 
 const sfuSignalMessageSchema = z.object({
@@ -1099,6 +1106,11 @@ const authenticatedHostMessageShape = {
   ...authenticatedMessageShape,
   role: z.literal("host"),
   viewerPasswordEnabled: z.boolean(),
+  // Absent keeps the published H264/VP8 forwarding baseline.
+  sfuVideoCodecs: z
+    .array(z.enum(["h264", "vp8", "vp9", "av1"]))
+    .max(4)
+    .optional(),
 };
 
 const authenticatedViewerMessageShape = {

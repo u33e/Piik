@@ -991,6 +991,7 @@ func (s *Server) completeAuthentication(sess *session, request authRequest, part
 			CodeEntryPolicy:               participant.CodeEntryPolicy,
 			ViewerAuthorizationGeneration: participant.ViewerAuthorizationGeneration,
 			MediaMode:                     "peer-assisted",
+			SfuVideoCodecs:                protocol.SfuVideoCodecs,
 			ShareGeneration:               roomShareGeneration,
 			RouteRevision:                 protocol.Int(hybridState.routeRevision),
 			RouteAssignment:               hybridState.routeAssignment,

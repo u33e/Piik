@@ -51,7 +51,15 @@ let stopping = false;
 let peerFailures = 0;
 let published = false;
 let simulcast = false;
-let codec: "vp8" | "h264" = "vp8";
+let codec: "vp8" | "h264" | "vp9" | "av1" = "vp8";
+// Codec actually negotiated on the wire, read from the SDP. SVC publications
+// carry no simulcast attribute, so this is the only codec evidence.
+let wireCodec: string | null = null;
+
+function wireCodecFromSdp(sdp: string): string | null {
+  const match = /a=rtpmap:[0-9]+ (VP8|H264|VP9|AV1)\/90000/i.exec(sdp);
+  return match ? `video/${match[1]!.toUpperCase()}` : null;
+}
 let audioKbps = 0;
 let audioCodec: string | null = null;
 let error: string | null = null;
@@ -71,6 +79,7 @@ function send(message: ClientMessage): boolean {
   if (message.type === "sfu-signal" && message.kind !== "candidate") traceRoute({ ...message, type: `send-${message.kind}` });
   if (message.type === "sfu-signal" && message.description?.type === "offer") {
     simulcast = message.description.sdp.includes("a=simulcast:send q;h");
+    wireCodec = wireCodecFromSdp(message.description.sdp) ?? wireCodec;
   }
   socket.send(JSON.stringify(message));
   return true;
@@ -84,6 +93,9 @@ async function accept(message: ServerMessage, host: boolean): Promise<void> {
   if (message.type === "route-update" || message.type === "sfu-config" || message.type === "route-status") traceRoute(message);
   if (message.type === "route-status") routeStatus = message.state;
   if (message.type === "sfu-signal" && message.kind !== "candidate") traceRoute({ ...message, type: `receive-${message.kind}` });
+  if (message.type === "sfu-signal" && message.description?.type === "offer") {
+    wireCodec = wireCodecFromSdp(message.description.sdp) ?? wireCodec;
+  }
   if (message.type === "error") throw new Error(`${message.code}: ${message.message}`);
   if (message.type === "authenticated") {
     authenticated = true;
@@ -316,7 +328,7 @@ export async function reconnectViewer(room: CreateRoomResponse, discardMedia = f
 }
 
 export function snapshot() {
-  return { authenticated, published, simulcast, decoded, committed, peerFailures,
+  return { authenticated, published, simulcast, decoded, committed, peerFailures, codec: wireCodec,
     maxAudioBitrate: profile.maxAudioBitrate,
     visibility: document.visibilityState, capture: source?.getVideoTracks()[0]?.getSettings(),
     routeEvents, routeStatus,
@@ -358,7 +370,9 @@ export async function setVideoRates(maxFramerate: number, maxBitrate: number): P
   return await applyProfile({ ...profile, maxFramerate, maxBitrate });
 }
 
-export async function waitForFrames(width: number, height: number, minimumFrames = 15, withinCeiling = false, tolerance = 0) {
+// The lowest spatial layer of a scalable stream can be a quarter of the source,
+// so a layer-drop check uses a smaller floor than the capture-size check.
+export async function waitForFrames(width: number, height: number, minimumFrames = 15, withinCeiling = false, tolerance = 0, floor = 320) {
   if (!video) throw new Error("Viewer video is unavailable");
   const target = video;
   return await new Promise<{ frames: number; width: number; height: number }>((resolve, reject) => {
@@ -371,7 +385,8 @@ export async function waitForFrames(width: number, height: number, minimumFrames
     const next = () => {
       callback = target.requestVideoFrameCallback(() => {
         const matches = withinCeiling
-          ? target.videoWidth >= 320 && target.videoHeight >= 240 && target.videoWidth <= width && target.videoHeight <= height
+          ? target.videoWidth >= floor && target.videoHeight >= Math.round(floor * 0.5625) &&
+            target.videoWidth <= width && target.videoHeight <= height
           : Math.abs(target.videoWidth - width) <= tolerance && Math.abs(target.videoHeight - height) <= tolerance;
         frames = matches ? frames + 1 : 0;
         if (frames < minimumFrames) return next();

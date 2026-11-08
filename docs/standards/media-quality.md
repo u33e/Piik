@@ -240,16 +240,30 @@ claims that every Browser, game, or network already meets them.
 
 ## Codec Decision
 
-The pre-share Browser selector is `VP8 | Auto | H264`, defaults to Auto, and is
-locked while sharing. It is local UI state and is not persisted or carried as a
-room quality setting.
+The pre-share Browser selector offers `Auto`, `H264`, `VP8`, `VP9` and `AV1`,
+defaults to Auto, and is locked while sharing. It is local UI state and is not
+persisted or carried as a room quality setting.
 
-Auto uses one bounded actual-sender probe rather than a capability or device
-allowlist. A proved sender prefers H.264 with VP8 fallback; unsupported, failed,
-or inconclusive probes use VP8. Manual VP8 or H264 strictly selects that codec.
-The probe deadline covers setup, negotiation and statistics; cancellation retires
-its resources even when a Browser operation remains pending. The result stays
-fixed for the current share and is reconsidered for a new share.
+Auto proves candidates in quality-first order — AV1, VP9, H264, VP8 — with one
+bounded actual-sender probe per candidate, and keeps the first whose encode
+pipeline sustains the selected profile. Each candidate owns a four-second
+deadline and the ladder a ten-second one. A Browser that advertises no candidate,
+a cancelled probe, or a ladder without a sustaining candidate keeps VP8. A manual
+choice strictly selects that codec. Each probe deadline covers setup, negotiation
+and statistics; cancellation retires its resources even when a Browser operation
+remains pending. The result stays fixed for the current share and is reconsidered
+for a new share.
+
+An automatic negotiation offers the proven codec first and the remaining quality
+order after it, so a Viewer without that codec negotiates the next best one
+instead of losing video; a manual choice offers only itself. Native capture keeps
+H264 and VP8 because the App owns its encoders, and a Browser-only choice leaves
+that App selection intact. The embedded SFU forwards all four codecs: H264 and
+VP8 as RID simulcast, VP9 and AV1 as one scalable stream whose spatial layers it
+selects through the dependency descriptor
+([ADR-0016](../adr/0016-livekit-shaped-sfu-edge.md)). A server that does not
+advertise `vp9`/`av1` keeps the H264/VP8 baseline, and such a share publishes VP8
+to it rather than losing that fallback route.
 ADR-0007 owns probe and negotiation mechanics.
 
 Codec selection preserves the negotiated repair stream associated with the

@@ -42,7 +42,7 @@ export function codecContractWarnings(
   const codecName = (codec: string) => codec.split("/").at(-1) ?? codec;
   if (
     media === "video" && metrics.codec &&
-    !["video/h264", "video/vp8"].includes(metrics.codec.toLowerCase())
+    !["video/h264", "video/vp8", "video/vp9", "video/av1"].includes(metrics.codec.toLowerCase())
   ) {
     warnings.push(t("stats.warn.codec", { codec: codecName(metrics.codec) }));
   }

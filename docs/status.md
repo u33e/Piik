@@ -80,8 +80,11 @@ Magicsock integration is not planned; its [controlled comparison](./research/nat
 records the technical basis.
 
 The [media assessment](./research/native-client-media.md#media-capability-extension-assessment)
-owns bounded output and live-control evidence. Additional codecs, surround
-delivery and end-to-end HDR remain outside the published phase.
+owns bounded output and live-control evidence. Browser sharing selects among
+H264, VP8, VP9 and AV1 behind the measured gate; Native capture remains H264/VP8.
+The embedded SFU forwards all four, using RID simulcast for H264/VP8 and one
+scalable stream for VP9/AV1. Codecs beyond those, surround delivery and end-to-end
+HDR remain outside the published phase.
 
 ## Deployment
 

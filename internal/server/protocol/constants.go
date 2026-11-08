@@ -77,3 +77,7 @@ var DefaultRoutePolicy = RoutePolicy{
 	TopologyOptimization: true,
 	NatPrediction:        false,
 }
+
+// SfuVideoCodecs lists the video codecs the embedded SFU forwards. The Browser
+// emits a codec outside this set only for direct edges.
+var SfuVideoCodecs = []string{"h264", "vp8", "vp9", "av1"}

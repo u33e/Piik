@@ -251,10 +251,12 @@ encoder implementation nor a power-efficiency flag, so the result proves only
 that this current Browser/device/profile H.264 path is unsuitable. It does not
 support a GPU-vendor rule or a hardware/software inference.
 
-VP9, AV1, and H.265 remain unsupported product candidates: Browser codec support
-does not prove the desired hardware profile, cross-Browser relay compatibility,
-or better real-time cadence. Screego's VP9 default was reverted after a frame-
-rate regression and supplies no hidden encoder-selection workaround.
+VP9 and AV1 are now source candidates behind the measured Auto gate: Browser
+codec support alone still proves neither the desired hardware profile,
+cross-Browser relay compatibility, nor better real-time cadence, so each
+candidate must sustain the selected profile in a real sender probe. H.265
+remains unsupported. Screego's VP9 default was reverted after a frame-rate
+regression and supplies no hidden encoder-selection workaround.
 
 ## Startup Quality Restriction
 

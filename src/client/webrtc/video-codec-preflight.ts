@@ -4,30 +4,36 @@ import {
   type QualityProfile,
 } from "../media/quality";
 import {
-  applyH264ProbeCodec,
+  applyProbeCodec,
   normalizeVideoOfferSdp,
+  supportsVideoCodecSend,
+  VIDEO_CODEC_QUALITY_ORDER,
   type BrowserVideoCodec,
 } from "./video-codec";
 import { addRemoteIceCandidate } from "./nat-prediction";
 import { mediaSourceRecord } from "./stats";
 
+// One codec probe keeps its own budget; the whole ladder shares a larger one so
+// a machine that cannot encode the top candidate still answers in finite time.
 const PREFLIGHT_DEADLINE_MS = 4_000;
+const PREFLIGHT_TOTAL_DEADLINE_MS = 10_000;
+const PREFLIGHT_MIN_BUDGET_MS = 1_200;
 const PREFLIGHT_POLL_MS = 100;
 const PREFLIGHT_WARMUP_MS = 500;
 const PREFLIGHT_MEASUREMENT_MS = 1_000;
 
-export interface H264ProbeTarget {
+export interface ProbeTarget {
   width: number;
   height: number;
   frameRate: number;
 }
 
-interface H264ProbeTrack {
+interface ProbeTrack {
   track: MediaStreamTrack;
   stop: () => void;
 }
 
-export interface H264ProbeSample {
+export interface ProbeSample {
   outboundId: string;
   sourceId: string;
   timestamp: number;
@@ -51,10 +57,10 @@ function evenDimension(value: number, ceiling: number): number {
   return Math.min(ceiling, Math.max(2, Math.round(value / 2) * 2));
 }
 
-export function h264ProbeTarget(
+export function probeTarget(
   settings: MediaTrackSettings,
   profile: QualityProfile,
-): H264ProbeTarget {
+): ProbeTarget {
   const ceiling = profile.resolution;
   const sourceWidth = positiveNumber(settings.width, ceiling.width);
   const sourceHeight = positiveNumber(settings.height, ceiling.height);
@@ -72,7 +78,7 @@ export function h264ProbeTarget(
 
 function drawProbeFrame(
   context: CanvasRenderingContext2D,
-  target: H264ProbeTarget,
+  target: ProbeTarget,
   frame: number,
 ): void {
   const columns = 24;
@@ -103,14 +109,14 @@ function drawProbeFrame(
   );
 }
 
-function createH264ProbeTrack(
+function createProbeTrack(
   source: MediaStreamTrack,
   profile: QualityProfile,
-): H264ProbeTrack | null {
+): ProbeTrack | null {
   if (typeof document === "undefined") {
     return null;
   }
-  const target = h264ProbeTarget(source.getSettings(), profile);
+  const target = probeTarget(source.getSettings(), profile);
   const canvas = document.createElement("canvas");
   canvas.width = target.width;
   canvas.height = target.height;
@@ -157,7 +163,10 @@ function recordById(
   return (report.get(id) as StatsRecord | undefined) ?? null;
 }
 
-function readH264ProbeSample(report: RTCStatsReport): H264ProbeSample | null {
+function readProbeSample(
+  report: RTCStatsReport,
+  mimeType: string,
+): ProbeSample | null {
   const candidates: StatsRecord[] = [];
   report.forEach((raw) => {
     const record = raw as StatsRecord;
@@ -176,11 +185,11 @@ function readH264ProbeSample(report: RTCStatsReport): H264ProbeSample | null {
   const outbound = candidates[0]!;
   const codec = recordById(report, outbound.codecId);
   const source = mediaSourceRecord(report, outbound);
-  const mimeType = stringValue(codec?.mimeType);
+  const actual = stringValue(codec?.mimeType);
   if (
     codec?.type !== "codec" ||
     source?.type !== "media-source" ||
-    mimeType?.toLowerCase() !== "video/h264"
+    actual?.toLowerCase() !== mimeType
   ) {
     return null;
   }
@@ -188,7 +197,7 @@ function readH264ProbeSample(report: RTCStatsReport): H264ProbeSample | null {
     outboundId: outbound.id,
     sourceId: source.id,
     timestamp: finiteNumber(outbound.timestamp) ?? 0,
-    codec: mimeType,
+    codec: actual,
     framesEncoded: finiteNumber(outbound.framesEncoded),
     sourceFrames: finiteNumber(source.frames),
     encodedFramesPerSecond: finiteNumber(outbound.framesPerSecond),
@@ -204,16 +213,17 @@ function allowedFrameLag(targetFrameRate: number): number {
   );
 }
 
-export function h264ProbeSustainsTarget(
-  baseline: H264ProbeSample,
-  current: H264ProbeSample,
+export function probeSustainsTarget(
+  baseline: ProbeSample,
+  current: ProbeSample,
   targetFrameRate: number,
 ): boolean | null {
   if (
     baseline.outboundId !== current.outboundId ||
     baseline.sourceId !== current.sourceId ||
     current.timestamp <= baseline.timestamp ||
-    current.codec.toLowerCase() !== "video/h264" ||
+    // A negotiation that fell back to another codec is not this candidate.
+    current.codec.toLowerCase() !== baseline.codec.toLowerCase() ||
     current.qualityLimitationReason === "cpu"
   ) {
     return false;
@@ -257,8 +267,8 @@ export function h264ProbeSustainsTarget(
 }
 
 function hasProbeWindow(
-  baseline: H264ProbeSample,
-  current: H264ProbeSample,
+  baseline: ProbeSample,
+  current: ProbeSample,
 ): boolean {
   if (
     baseline.outboundId !== current.outboundId ||
@@ -270,9 +280,11 @@ function hasProbeWindow(
   return current.timestamp - baseline.timestamp >= PREFLIGHT_WARMUP_MS;
 }
 
-async function runH264Probe(
+async function runCodecProbe(
   track: MediaStreamTrack,
   profile: QualityProfile,
+  codec: BrowserVideoCodec,
+  budgetMs: number,
   signal?: AbortSignal,
 ): Promise<boolean> {
   const senderConnection = new RTCPeerConnection({ iceServers: [] });
@@ -296,7 +308,7 @@ async function runH264Probe(
   };
   const abort = () => stop(new DOMException("Codec probe cancelled", "AbortError"));
   const timer = window.setTimeout(
-    () => stop(new Error("Codec probe timed out")), PREFLIGHT_DEADLINE_MS,
+    () => stop(new Error("Codec probe timed out")), budgetMs,
   );
   signal?.addEventListener("abort", abort, { once: true });
   try {
@@ -337,9 +349,10 @@ async function runH264Probe(
     const transceiver = senderConnection.addTransceiver(track, {
       direction: "sendonly",
     });
-    if (!applyH264ProbeCodec(transceiver)) {
+    if (!applyProbeCodec(transceiver, codec)) {
       return false;
     }
+    const mimeType = `video/${codec}`;
     await wait(() => configureVideoSender(
       transceiver.sender,
       startupVideoProfile(profile),
@@ -367,14 +380,15 @@ async function runH264Probe(
       ),
     ));
 
-    let warmupBaseline: H264ProbeSample | null = null;
-    let measurementBaseline: H264ProbeSample | null = null;
+    let warmupBaseline: ProbeSample | null = null;
+    let measurementBaseline: ProbeSample | null = null;
     for (;;) {
       if (signal?.aborted || track.readyState === "ended" || iceFailed) {
         return false;
       }
-      const sample = readH264ProbeSample(
+      const sample = readProbeSample(
         await wait(() => transceiver.sender.getStats()),
+        mimeType,
       );
       if (sample) {
         warmupBaseline ??= sample;
@@ -385,7 +399,7 @@ async function runH264Probe(
         ) {
           measurementBaseline = sample;
         } else if (measurementBaseline && sample !== measurementBaseline) {
-          const result = h264ProbeSustainsTarget(
+          const result = probeSustainsTarget(
             measurementBaseline,
             sample,
             profile.maxFramerate,
@@ -408,6 +422,11 @@ async function runH264Probe(
   }
 }
 
+/**
+ * Proves one real sender per candidate in quality-first order and returns the
+ * first codec whose encode pipeline sustains the selected profile. A Browser
+ * that advertises no candidate, or a cancelled probe, keeps VP8.
+ */
 export async function preferredVideoCodecForTrack(
   track: MediaStreamTrack,
   profile: QualityProfile,
@@ -416,15 +435,33 @@ export async function preferredVideoCodecForTrack(
   if (signal?.aborted || track.kind !== "video" || track.readyState === "ended") {
     return "vp8";
   }
-  let probe: H264ProbeTrack | null = null;
-  try {
-    probe = createH264ProbeTrack(track, profile);
-    return probe && (await runH264Probe(probe.track, profile, signal))
-      ? "h264"
-      : "vp8";
-  } catch {
-    return "vp8";
-  } finally {
-    probe?.stop();
+  const deadline = Date.now() + PREFLIGHT_TOTAL_DEADLINE_MS;
+  for (const codec of VIDEO_CODEC_QUALITY_ORDER) {
+    if (signal?.aborted || track.readyState !== "live") break;
+    const remaining = deadline - Date.now();
+    if (remaining < PREFLIGHT_MIN_BUDGET_MS) break;
+    if (!supportsVideoCodecSend(codec)) continue;
+    let probe: ProbeTrack | null = null;
+    try {
+      probe = createProbeTrack(track, profile);
+      // A missing probe canvas or encoder pipeline is not codec-specific.
+      if (!probe) return "vp8";
+      if (await runCodecProbe(
+        probe.track,
+        profile,
+        codec,
+        Math.min(PREFLIGHT_DEADLINE_MS, remaining),
+        signal,
+      )) {
+        return codec;
+      }
+    } catch {
+      // Cancellation ends the whole decision; one candidate's timeout or setup
+      // failure only rejects that candidate.
+      if (signal?.aborted) return "vp8";
+    } finally {
+      probe?.stop();
+    }
   }
+  return "vp8";
 }
