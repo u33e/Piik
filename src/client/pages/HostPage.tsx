@@ -206,6 +206,7 @@ import {
 import {
   automaticVideoCodecPreference,
   manualVideoCodecPreference,
+  nativeSenderCodec,
   sfuVideoCodec,
   supportsH264Receive,
   type BrowserVideoCodec,
@@ -2324,7 +2325,7 @@ export function HostPage({
                 input.natPredictionEnabled,
                 nativeClient,
                 events,
-                videoCodecRef.current.primary,
+                nativeSenderCodec(videoCodecRef.current.primary),
                 nativeMediaIngressRef.current?.source,
                 (candidate.connectionAttempt?.current ?? 1) > 1,
               );
@@ -2424,7 +2425,7 @@ export function HostPage({
           routePolicyRef.current.natPrediction,
           nativeClient,
           peerEvents,
-          videoCodecRef.current.primary,
+          nativeSenderCodec(videoCodecRef.current.primary),
           nativeMediaIngressRef.current?.source,
         )
       : new HostPeer(

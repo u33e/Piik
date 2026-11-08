@@ -43,6 +43,14 @@ export function manualVideoCodecPreference(
   return { primary: codec, fallbacks: [] };
 }
 
+/** A native sender publishes only H264 or VP8; a scalable share stays Browser-only. */
+export function nativeSenderCodec(codec: BrowserVideoCodec): "h264" | "vp8" {
+  if (codec === "h264" || codec === "vp8") {
+    return codec;
+  }
+  throw new Error("native sender codec is unavailable");
+}
+
 /** The codec this server may forward for one share: the share codec when the
  * server advertises it, otherwise VP8 rather than losing that fallback route. */
 export function sfuVideoCodec(
